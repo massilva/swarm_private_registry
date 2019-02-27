@@ -1,0 +1,48 @@
+version: "3.2"
+services:
+    privateregistry:
+        image: registry:2
+        restart: always
+        volumes:
+            - /home/docker/auth:/auth
+            - /home/docker/certs:/certs
+            - /home/docker/data:/var/lib/registry
+        deploy:
+            mode: replicated
+            replicas: 4
+        ports:
+            - 5001:5001
+        networks:
+            - functions
+        environment:
+            REGISTRY_AUTH: htpasswd
+            REGISTRY_AUTH_HTPASSWD_REALM: Registry
+            REGISTRY_AUTH_HTPASSWD_PATH: /auth/registry.password
+            REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+            REGISTRY_HTTP_ADDR: "0.0.0.0:5001"
+            REGISTRY_HTTP_TLS_KEY: /run/secrets/key.pem
+            REGISTRY_HTTP_TLS_CLIENTCAS_0: /run/secrets/ca.pem
+            REGISTRY_HTTP_TLS_CERTIFICATE: /run/secrets/cert.pem
+        secrets:
+            - ca.pem
+            - cert.pem
+            - key.pem
+        deploy:
+            placement:
+                constraints:
+                    - 'node.role == manager'
+                    - 'node.platform.os == linux'
+                     
+secrets:
+    ca.pem:
+        file: ./certs/ca.pem
+    cert.pem:
+        file: ./certs/cert.pem
+    key.pem:
+        file: ./certs/key.pem
+volumes:
+    registry:
+    auth:
+    certs:
+networks:
+    functions:
