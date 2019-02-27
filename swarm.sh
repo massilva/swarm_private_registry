@@ -175,7 +175,7 @@ function stop {
 }
 
 function usage {
-    echo $"Usage: $0 {init|build|deploy|stop|status|teardown|leave}"
+    echo $"Usage: $0 {init|build|deploy|stop|status|teardown|leave|tag|viz}"
     echo ""
     echo "\tCreate or destroy a local $STACKNAME docker swarm."
 }
