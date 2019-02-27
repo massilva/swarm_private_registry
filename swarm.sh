@@ -180,6 +180,16 @@ function usage {
     echo "\tCreate or destroy a local $STACKNAME docker swarm."
 }
 
+function viz_service {
+    echo "Deploy visualization service"
+    docker-machine ssh $MANAGERNAME "docker service create \
+	--name=viz \
+	--publish=8080:8080 \
+	--constraint=node.role==manager \
+	--mount=type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+	dockersamples/visualizer"
+}
+
 case "$1" in
     init)
         setup
@@ -206,6 +216,9 @@ case "$1" in
         ;;
     tag)
         tag_image "$2" "$3"
+        ;;
+    viz)
+        viz_service
         ;;
     *)
         usage
