@@ -32,6 +32,23 @@ WORKERS=2
 WORKERNAME="worker-"
 REGISTRYPORT="5001"
 
+function ssh_cp {
+    docker-machine scp ./certs/domain.crt $1:/tmp/ca.crt
+    docker-machine scp ./certs/cert.pem $1:/tmp/cert.pem
+    docker-machine scp ./certs/domain.key $1:/tmp/domain.key
+    docker-machine ssh $1 "sudo mkdir -p /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/"
+    docker-machine ssh $1 "sudo mkdir -p /home/docker/certs/"
+    docker-machine ssh $1 "sudo cp /tmp/ca.crt /home/docker/certs/ca.pem"
+    docker-machine ssh $1 "sudo cp /tmp/domain.key /home/docker/certs/key.pem"
+    docker-machine ssh $1 "sudo cp /tmp/cert.pem /home/docker/certs/cert.pem"
+    docker-machine ssh $1 "sudo mv /tmp/ca.crt /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/ca.crt"
+    docker-machine ssh $1 "sudo mv /tmp/domain.key /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/client.key"
+    docker-machine ssh $1 "sudo mv /tmp/cert.pem /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/cert.pem"
+    docker-machine ssh $1 "sudo chmod 644 certs/key.pem && sudo chown -R docker certs"
+    docker-machine ssh $1 "sudo mkdir -p /home/docker/auth/"
+    docker-machine scp ./auth/registry.password $1:/home/docker/auth/
+}
+
 function setup {
 
     echo "Creating swarm vms"
@@ -56,22 +73,20 @@ function setup {
     echo "Update node labels"
     docker-machine ssh $MANAGERNAME "docker node update --label-add registry=true $MANAGERNAME" 1>/dev/null
 
-    echo "creating registry certs"
     mkdir -p certs
-    openssl req -batch -subj /CN=$HOSTNAME\
-          -newkey rsa:4096 -nodes -sha256 -keyout certs/domain.key \
-          -x509 -days 365 -out certs/domain.crt
+    if [ ! -f certs/domain.crt || ! -f certs/domain.crt ]; then
+        echo "creating registry certs"
+        openssl req -batch -subj /CN=$HOSTNAME\
+           -newkey rsa:4096 -nodes -sha256 -keyout certs/domain.key \
+           -x509 -days 365 -out certs/domain.crt
+        cp certs/domain.crt certs/cert.pem
+    fi
 
     echo "Copying registry certs to each machine"
-    docker-machine scp ./certs/domain.crt $MANAGERNAME:/tmp/ca.crt
-    docker-machine ssh $MANAGERNAME "sudo mkdir -p /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/"
-    docker-machine ssh $MANAGERNAME "sudo mv /tmp/ca.crt /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/ca.crt"
-
+    ssh_cp "$MANAGERNAME"
     for i in $(seq 1 $WORKERS)
     do
-        docker-machine scp ./certs/domain.crt $WORKERNAME$i:/tmp/ca.crt
-        docker-machine ssh $WORKERNAME$i "sudo mkdir -p /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/"
-        docker-machine ssh $WORKERNAME$i "sudo mv /tmp/ca.crt /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/ca.crt"
+        ssh_cp "$WORKERNAME$i"
     done
 
     echo "# Run this command to configure your docker environment to use the $MANAGERNAME vm:"
@@ -126,7 +141,9 @@ function status {
 function addhost {
     echo "Adding $HOSTNAME to your /etc/hosts, this will require your sudo password"
     WORKERIP=$(docker-machine ls --filter "name=$MANAGERNAME" --format {{.URL}} | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}")
-    sudo -- sh -c -e "echo '$WORKERIP\t$HOSTNAME' >> /etc/hosts"
+    if ! grep -q "$WORKERIP\t$HOSTNAME" /etc/hosts; then
+        sudo -- sh -c -e "echo '$WORKERIP\t$HOSTNAME' >> /etc/hosts"
+    fi
 }
 
 function removehost {
@@ -145,8 +162,23 @@ function removehost {
 
 function deploy_stack {
     echo "Deploying the $STACKNAME stack"
-    docker stack deploy $STACKNAME --prune --compose-file docker-compose.yaml #2>/dev/null
-    docker stack ps $STACKNAME
+    docker-machine ssh $MANAGERNAME "mkdir -p certs/"
+    docker-machine ssh $MANAGERNAME "mkdir -p auth/"
+    docker-machine ssh $MANAGERNAME "mkdir -p data/"
+
+    docker-machine scp docker-compose.yml $MANAGERNAME:/home/docker/
+    echo ""
+    echo "Copying to $MANAGERNAME"
+    ssh_cp "$MANAGERNAME"
+    for i in $(seq 1 $WORKERS)
+    do
+        echo ""
+        echo "Copying to $WORKERNAME$i"
+        docker-machine scp docker-compose.yml $MANAGERNAME:/home/docker/
+        ssh_cp "$WORKERNAME$i"
+    done
+    docker-machine ssh $MANAGERNAME "docker stack deploy $STACKNAME --prune --compose-file docker-compose.yml #2>/dev/null"
+    docker-machine ssh $MANAGERNAME "docker stack ps $STACKNAME"
     echo "Done"
 }
 
@@ -219,6 +251,9 @@ case "$1" in
         ;;
     viz)
         viz_service
+        ;;
+    addhost)
+        addhost
         ;;
     *)
         usage
