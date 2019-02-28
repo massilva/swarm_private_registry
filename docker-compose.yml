@@ -41,7 +41,7 @@ secrets:
     key.pem:
         file: ./certs/key.pem
 volumes:
-    registry:
+    data:
     auth:
     certs:
 networks:
