@@ -9,7 +9,6 @@ services:
             - /home/docker/data:/var/lib/registry
         deploy:
             mode: replicated
-            replicas: 4
         ports:
             - 5001:5001
         networks:

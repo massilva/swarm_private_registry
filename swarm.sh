@@ -27,7 +27,9 @@ STACKNAME="privateregistry" #nome do serviço descrito no arquivo `docker-compos
 HOSTNAME="myregistry.com"
 DOCKERMACHINEDRIVER="virtualbox"
 
-MANAGERNAME="master"
+MANAGERS=3
+MANAGERNAMEPREFIX="manager-"
+MANAGERNAME=$MANAGERNAMEPREFIX"1"
 WORKERS=2
 WORKERNAME="worker-"
 REGISTRYPORT="5001"
@@ -46,23 +48,40 @@ function ssh_cp {
     docker-machine ssh $1 "sudo mv /tmp/cert.pem /etc/docker/certs.d/$HOSTNAME$i:$REGISTRYPORT/cert.pem"
     docker-machine ssh $1 "sudo chmod 644 certs/key.pem && sudo chown -R docker certs"
     docker-machine ssh $1 "sudo mkdir -p /home/docker/auth/"
-    docker-machine scp ./auth/registry.password $1:/home/docker/auth/
+    docker-machine ssh $1 "sudo [ -e /home/docker/auth/registry.password ] && sudo rm /home/docker/auth/registry.password"
+    docker-machine scp ./auth/registry.password $1:/home/docker/auth/registry.password
 }
 
 function setup {
 
     echo "Creating swarm vms"
-    docker-machine create --driver $DOCKERMACHINEDRIVER $MANAGERNAME
+    for i in $(seq 1 $MANAGERS)
+    do
+	MANAGERNAME=$MANAGERNAMEPREFIX$i
+	docker-machine create --driver $DOCKERMACHINEDRIVER $MANAGERNAME
+    done
+
     for i in $(seq 1 $WORKERS)
     do
     	docker-machine create --driver $DOCKERMACHINEDRIVER $WORKERNAME$i
     done
 
     echo "Setup manager node for the swarm"
+    MANAGERNAME=$MANAGERNAMEPREFIX"1"
     MANAGERID=$(docker-machine ls --filter "name=$MANAGERNAME" --format {{.URL}} | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}")
     docker-machine ssh $MANAGERNAME "docker swarm init --advertise-addr $MANAGERID" 1>/dev/null
     WORKERJOINTOKEN=$(docker-machine ssh $MANAGERNAME  "docker swarm join-token worker -q")
+    MANAGERJOINTOKEN=$(docker-machine ssh $MANAGERNAME  "docker swarm join-token manager -q")
 
+    echo "Setup manager nodes for the swarm"
+    for i in $(seq 2 $MANAGERS)
+    do
+	MANAGERNAME=$MANAGERNAMEPREFIX$i
+        echo "Joining $MANAGERNAME to $MANAGERNAMEPREFIX""1"
+        docker-machine ssh $MANAGERNAME "docker swarm join --token $MANAGERJOINTOKEN $MANAGERID" 1>/dev/null
+    done
+
+    MANAGERNAME=$MANAGERNAMEPREFIX"1"
     echo "Setup worker nodes for the swarm"
     for i in $(seq 1 $WORKERS)
     do
@@ -74,16 +93,19 @@ function setup {
     docker-machine ssh $MANAGERNAME "docker node update --label-add registry=true $MANAGERNAME" 1>/dev/null
 
     mkdir -p certs
-    if [ ! -f certs/domain.crt || ! -f certs/domain.crt ]; then
-        echo "creating registry certs"
-        openssl req -batch -subj /CN=$HOSTNAME\
+    echo "creating registry certs"
+    openssl req -batch -subj /CN=$HOSTNAME\
            -newkey rsa:4096 -nodes -sha256 -keyout certs/domain.key \
            -x509 -days 365 -out certs/domain.crt
-        cp certs/domain.crt certs/cert.pem
-    fi
+    cp certs/domain.crt certs/cert.pem
 
     echo "Copying registry certs to each machine"
-    ssh_cp "$MANAGERNAME"
+    for i in $(seq 1 $MANAGERS)
+    do
+	MANAGERNAME=$MANAGERNAMEPREFIX$i
+        ssh_cp "$MANAGERNAME"
+    done
+
     for i in $(seq 1 $WORKERS)
     do
         ssh_cp "$WORKERNAME$i"
@@ -114,17 +136,28 @@ function leave_swarm {
         echo "Tear down $WORKERNAME$i ..."
         docker-machine ssh $WORKERNAME$i "docker swarm leave"
     done
-    echo "Tear down $MANAGERNAME ..."
-    docker-machine ssh $MANAGERNAME "docker swarm leave --force"
+
+    for i in $(seq 1 $MANAGERS)
+    do
+	MANAGERNAME=$MANAGERNAMEPREFIX$i
+        echo "Tear down $MANAGERNAME ..."
+        docker-machine ssh $MANAGERNAME "docker swarm leave --force"
+    done
 }
 
 function remove_vms {
     echo "Tear down the vms"
     for i in $(seq 1 $WORKERS)
     do
-        docker-machine rm $WORKERNAME$i
+	echo "Removing $WORKERNAME$i"
+        docker-machine rm $WORKERNAME$i -y
     done
-    docker-machine rm $MANAGERNAME
+    for i in $(seq 1 $MANAGERS)
+    do
+	MANAGERNAME=$MANAGERNAMEPREFIX$i
+	echo "Removing $MANAGERNAME"
+        docker-machine rm $MANAGERNAME -y
+    done
 }
 
 function teardown {
@@ -161,15 +194,23 @@ function removehost {
 }
 
 function deploy_stack {
-    echo "Deploying the $STACKNAME stack"
-    docker-machine ssh $MANAGERNAME "mkdir -p certs/"
-    docker-machine ssh $MANAGERNAME "mkdir -p auth/"
-    docker-machine ssh $MANAGERNAME "mkdir -p data/"
+    for i in $(seq 1 $WORKERS)
+    do
+	    MANAGERNAME=$MANAGERNAMEPREFIX$i
 
-    docker-machine scp docker-compose.yml $MANAGERNAME:/home/docker/
-    echo ""
-    echo "Copying to $MANAGERNAME"
-    ssh_cp "$MANAGERNAME"
+	    echo "Deploying the $STACKNAME stack $MANAGERNAME:"
+	    docker-machine ssh $MANAGERNAME "mkdir -p certs/"
+	    docker-machine ssh $MANAGERNAME "mkdir -p auth/"
+	    docker-machine ssh $MANAGERNAME "mkdir -p data/"
+
+	    docker-machine scp docker-compose.yml $MANAGERNAME:/home/docker/
+	    echo ""
+	    echo "Copying to $MANAGERNAME"
+	    ssh_cp "$MANAGERNAME"
+    done
+
+    MANAGERNAME=$MANAGERNAMEPREFIX"1"
+
     for i in $(seq 1 $WORKERS)
     do
         echo ""
